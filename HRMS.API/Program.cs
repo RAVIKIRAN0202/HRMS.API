@@ -10,6 +10,18 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("AllowReactApp",
+        policy =>
+        {
+            policy
+                .WithOrigins("http://localhost:3000")
+                .AllowAnyHeader()
+                .AllowAnyMethod();
+        });
+});
+
 builder.Services.AddControllers();
 // Learn more about configuring Swagger/OpenAPI at https://aka.ms/aspnetcore/swashbuckle
 builder.Services.AddEndpointsApiExplorer();
@@ -58,6 +70,21 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             IssuerSigningKey = new SymmetricSecurityKey(
                 Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]!))
         };
+        options.Events = new JwtBearerEvents
+        {
+            OnTokenValidated = async context =>
+            {
+                var principal = context.Principal;
+                if (!int.TryParse(principal?.FindFirst(System.Security.Claims.ClaimTypes.NameIdentifier)?.Value, out var userId))
+                { context.Fail("Invalid account."); return; }
+                var db = context.HttpContext.RequestServices.GetRequiredService<ApplicationDbContext>();
+                var user = await db.Users.AsNoTracking().Where(u => u.UserId == userId)
+                    .Select(u => new { u.IsActive, u.SessionVersion, u.MustChangePassword }).FirstOrDefaultAsync();
+                if (user == null || !user.IsActive || principal?.FindFirst("session_version")?.Value != user.SessionVersion.ToString())
+                { context.Fail("Session expired. Please sign in again."); return; }
+                context.HttpContext.Items["MustChangePassword"] = user.MustChangePassword;
+            }
+        };
     });
 
 builder.Services.AddAuthorization();
@@ -71,11 +98,25 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
+
 app.UseHttpsRedirection();
+
+app.UseCors("AllowReactApp");
 
 app.UseAuthentication();
 
-app.UseAuthorization();
+app.Use(async (context, next) =>
+{
+    if (context.User.Identity?.IsAuthenticated == true && context.Items["MustChangePassword"] is true &&
+        !(HttpMethods.IsPost(context.Request.Method) && string.Equals(context.Request.Path.Value?.TrimEnd('/'), "/api/Auth/change-password", StringComparison.OrdinalIgnoreCase)) &&
+        !(HttpMethods.IsGet(context.Request.Method) && string.Equals(context.Request.Path.Value?.TrimEnd('/'), "/api/Auth/session", StringComparison.OrdinalIgnoreCase)))
+    {
+        context.Response.StatusCode = 403;
+        await context.Response.WriteAsJsonAsync(new { code = "PASSWORD_CHANGE_REQUIRED", message = "Change your temporary password before continuing." });
+        return;
+    }
+    await next();
+});
 
 app.UseAuthorization();
 

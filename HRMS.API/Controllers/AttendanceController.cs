@@ -4,6 +4,7 @@ using HRMS.API.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using System.Security.Claims;
 
 namespace HRMS.API.Controllers
 {
@@ -13,6 +14,7 @@ namespace HRMS.API.Controllers
     public class AttendanceController : ControllerBase
     {
         private readonly ApplicationDbContext _context;
+        private int UserId => int.TryParse(User.FindFirstValue(ClaimTypes.NameIdentifier), out var id) ? id : 0;
 
         public AttendanceController(ApplicationDbContext context)
         {
@@ -20,11 +22,15 @@ namespace HRMS.API.Controllers
         }
 
         [HttpGet]
-        [Authorize(Roles = "Admin,HR")]
+        [Authorize(Roles = "Admin,HR,Employee")]
         public async Task<IActionResult> GetAttendance()
         {
             var attendance = await _context.Attendance
-                .Include(a => a.Employee)
+                .Where(a => User.IsInRole("Admin") || User.IsInRole("HR") || (a.Employee != null && a.Employee.UserId == UserId))
+                .OrderByDescending(a => a.AttendanceDate)
+                .Select(a => new { a.AttendanceId, a.EmployeeId, a.AttendanceDate, a.CheckInTime, a.CheckOutTime, a.Status,
+                    employeeName = a.Employee == null || a.Employee.User == null ? null : a.Employee.User.FullName,
+                    employeeCode = a.Employee == null ? null : a.Employee.EmployeeCode })
                 .ToListAsync();
 
             return Ok(attendance);
@@ -41,17 +47,23 @@ namespace HRMS.API.Controllers
             if (attendance == null)
                 return NotFound();
 
+            if (!User.IsInRole("Admin") && !User.IsInRole("HR") && attendance.Employee?.UserId != UserId) return Forbid();
+
             return Ok(attendance);
         }
 
         [HttpPost("check-in")]
         [Authorize(Roles = "Admin,HR,Employee")]
-        public async Task<IActionResult> CheckIn(AttendanceCheckInDto dto)
+        public async Task<IActionResult> CheckIn()
         {
             var today = DateTime.Today;
+            using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+            var employee = await _context.Employees.FirstOrDefaultAsync(e => e.UserId == UserId && e.Status == "Active");
+            if (employee == null) return BadRequest("An active employee profile is required. Contact HR.");
+            if (employee.DateOfJoining.Date > today) return BadRequest("You cannot check in before your joining date.");
 
             var alreadyCheckedIn = await _context.Attendance
-                .AnyAsync(a => a.EmployeeId == dto.EmployeeId &&
+                .AnyAsync(a => a.EmployeeId == employee.EmployeeId &&
                                a.AttendanceDate == today);
 
             if (alreadyCheckedIn)
@@ -59,7 +71,7 @@ namespace HRMS.API.Controllers
 
             var attendance = new Attendance
             {
-                EmployeeId = dto.EmployeeId,
+                EmployeeId = employee.EmployeeId,
                 AttendanceDate = today,
                 CheckInTime = DateTime.Now,
                 Status = "Present"
@@ -67,6 +79,7 @@ namespace HRMS.API.Controllers
 
             _context.Attendance.Add(attendance);
             await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
 
             return Ok(attendance);
         }
@@ -75,7 +88,10 @@ namespace HRMS.API.Controllers
         [Authorize(Roles = "Admin,HR,Employee")]
         public async Task<IActionResult> CheckOut(int attendanceId)
         {
-            var attendance = await _context.Attendance.FindAsync(attendanceId);
+            using var transaction = await _context.Database.BeginTransactionAsync(System.Data.IsolationLevel.Serializable);
+            var attendance = await _context.Attendance.Include(a => a.Employee).FirstOrDefaultAsync(a => a.AttendanceId == attendanceId && a.Employee != null && a.Employee.UserId == UserId);
+
+            
 
             if (attendance == null)
                 return NotFound();
@@ -83,9 +99,12 @@ namespace HRMS.API.Controllers
             if (attendance.CheckOutTime != null)
                 return BadRequest("Employee already checked out");
 
+            if (attendance.CheckInTime == null || attendance.CheckInTime > DateTime.Now) return BadRequest("A valid check-in is required before checkout.");
+
             attendance.CheckOutTime = DateTime.Now;
 
             await _context.SaveChangesAsync();
+            await transaction.CommitAsync();
 
             return Ok(attendance);
         }

@@ -13,6 +13,8 @@
         public int RoleId { get; set; }
 
         public bool IsActive { get; set; }
+        public bool MustChangePassword { get; set; }
+        public int SessionVersion { get; set; }
 
         public DateTime CreatedAt { get; set; }
 

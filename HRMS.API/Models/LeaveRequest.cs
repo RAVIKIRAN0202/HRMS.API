@@ -14,6 +14,7 @@
         public string Status { get; set; } = "Pending";
 
         public int? ApprovedBy { get; set; }
+        public string? ReviewComment { get; set; }
 
         public DateTime CreatedAt { get; set; }
 
