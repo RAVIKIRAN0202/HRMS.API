@@ -1,0 +1,56 @@
+# Copy to the backend repository root as azure-pipelines.yml.
+# Expected path from that root: HRMS.API/HRMS.API.csproj.
+trigger:
+  batch: true
+  branches:
+    include:
+      - master
+
+pool:
+  vmImage: windows-latest
+
+stages:
+  - stage: Build
+    jobs:
+      - job: Backend
+        steps:
+          - checkout: self
+          - task: UseDotNet@2
+            inputs:
+              packageType: sdk
+              version: '8.0.x'
+          - script: dotnet restore HRMS.API/HRMS.API.csproj
+            displayName: Restore API
+          - script: dotnet build HRMS.API/HRMS.API.csproj --configuration Release --no-restore
+            displayName: Build API
+          # Add dotnet test for real test projects when a backend suite exists.
+          - script: dotnet publish HRMS.API/HRMS.API.csproj --configuration Release --no-build --output "$(Build.ArtifactStagingDirectory)/publish"
+            displayName: Publish API files
+          - task: ArchiveFiles@2
+            inputs:
+              rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/publish'
+              includeRootFolder: false
+              archiveType: zip
+              archiveFile: '$(Build.ArtifactStagingDirectory)/api.zip'
+          - publish: '$(Build.ArtifactStagingDirectory)/api.zip'
+            artifact: backend
+
+  - stage: Deploy
+    dependsOn: Build
+    condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/master'), ne(variables['Build.Reason'], 'PullRequest'))
+    jobs:
+      - deployment: BackendProduction
+        environment: hrms-backend-production
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - download: current
+                  artifact: backend
+                - task: AzureWebApp@1
+                  inputs:
+                    azureSubscription: 'hrms-azure-connection'
+                    appType: webApp
+                    appName: hrms-api-ravikiran0202
+                    package: '$(Pipeline.Workspace)/backend/api.zip'
+                    deploymentMethod: zipDeploy

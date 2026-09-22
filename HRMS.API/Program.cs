@@ -10,13 +10,23 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 
+// Hosting settings can override this with Cors__AllowedOrigins__0, __1, etc.
+var allowedOrigins = builder.Configuration.GetSection("Cors:AllowedOrigins").Get<string[]>()
+    ?? (builder.Environment.IsDevelopment() ? new[] { "http://localhost:3000" } : Array.Empty<string>());
+if (allowedOrigins.Any(origin => !Uri.TryCreate(origin, UriKind.Absolute, out var uri)
+    || (uri.Scheme != "https" && uri.Scheme != "http")
+    || origin != uri.GetLeftPart(UriPartial.Authority)))
+{
+    throw new InvalidOperationException("Cors:AllowedOrigins must contain origins such as https://hrms.example.com, without paths or trailing slashes.");
+}
+
 builder.Services.AddCors(options =>
 {
     options.AddPolicy("AllowReactApp",
         policy =>
         {
             policy
-                .WithOrigins("http://localhost:3000")
+                .WithOrigins(allowedOrigins)
                 .AllowAnyHeader()
                 .AllowAnyMethod();
         });
